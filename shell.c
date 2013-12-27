@@ -79,6 +79,8 @@
 #include <tilde/tilde.h>
 #include <glob/strmatch.h>
 
+#include <pthread.h>
+
 #if defined (__OPENNT)
 #  include <opennt/opennt.h>
 #endif
@@ -1638,19 +1640,22 @@ init_interactive_script ()
   expand_aliases = interactive_shell = startup_state = 1;
 }
 
-static void
-init_color_stderr ()
+struct stderr_thread_data {
+  int err;
+  int pipe;
+};
+
+static void *
+colorize_stderr(void *void_thread_args)
 {
+  struct stderr_thread_data* data = (struct stderr_thread_data*)void_thread_args;
+  int n;
+  char buf[1024];
+
   #define STDERR_PREFIX "\033[31m"
   #define STDERR_SUFFIX "\033[m"
 
-  int pid, stderr_copy;
-  int pipes[2];
-  int n;
-
   size_t stderr_prefix_len, stderr_suffix_len;
-  char buf[1024];
-
   char *stderr_prefix = get_string_value("STDERR_PREFIX");
   char *stderr_suffix = get_string_value("STDERR_SUFFIX");
 
@@ -1660,72 +1665,55 @@ init_color_stderr ()
   stderr_prefix_len = strlen(stderr_prefix);
   stderr_suffix_len = strlen(stderr_suffix);
 
+  for (;;) {
+    n = read(data->pipe, buf, sizeof(buf));
+    if (n <= 0) {
+      if (errno == EINTR) continue;
+      if (errno == EINVAL) pthread_exit(NULL);
+      if (errno) {
+        perror("Cannot read(pipes[0])");
+        pthread_exit(NULL);
+      }
+      pthread_exit(NULL);
+    }
+
+    write(data->err, stderr_prefix, stderr_prefix_len);
+    write(data->err, buf, (size_t) n);
+    write(data->err, stderr_suffix, stderr_suffix_len);
+  }
+
+  #undef STDERR_PREFIX
+  #undef STDERR_SUFFIX
+}
+
+static void
+init_color_stderr ()
+{
+  pthread_t thr;
+  int pipes[2];
+  struct stderr_thread_data data;
+
   if (pipe(pipes)) {
     perror("Cannot create pipes");
     return;
   }
 
-  stderr_copy = dup(2);
-  if (stderr_copy < 0) {
+  data.err = dup(2);
+  if (data.err < 0) {
     perror("Cannot copy stderr");
     close(pipes[0]);
     close(pipes[1]);
     return;
   }
 
-  if ((pid = fork()) < 0) {
-    perror("Cannot fork()");
-    exit(2);
-  }
-
-  /* not child */
-  if (pid != 0)
-  {
-    if (dup2(pipes[1], 2) < 0) {
-      perror("Cannot dup2(pipes[1], 2)");
-      return;
-    }
-
-    if (close(pipes[0])) {
-      perror("Cannot close(pipes[0])");
-      return;
-    }
-
-    if (close(pipes[1])) {
-      perror("Cannot close(pipes[1])");
-      return;
-    }
-
+  if (dup2(pipes[1], 2) < 0) {
+    perror("Cannot dup2(pipes[1], 2)");
     return;
-  } else {
-    if (close(pipes[1])) {
-      perror("Cannot close(pipes[1])");
-      return;
-    }
-
-    for (;;) {
-      n = read(pipes[0], buf, sizeof(buf));
-      if (n <= 0) {
-        if (errno == EINTR) continue;
-        if (errno == EINVAL) exit(0);
-        if (errno) {
-          perror("Cannot read(pipes[0])");
-          exit(2);
-        }
-        exit(0);
-      }
-
-      write(2, stderr_prefix, stderr_prefix_len);
-      write(2, buf, (size_t) n);
-      write(2, stderr_suffix, stderr_suffix_len);
-    }
-
-    printf("Unreachable statement at %s:%d\n", __FILE__, __LINE__);
-    exit(2);
   }
 
-  #undef STDERR_PREFIX
-  #undef STDERR_SUFFIX
+  data.pipe = pipes[0];
+  pthread_create(&thr, NULL, colorize_stderr, (void*) &data);
+  return;
 }
 
 void
