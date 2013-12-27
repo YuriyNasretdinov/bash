@@ -316,6 +316,7 @@ static int uidget __P((void));
 static void init_interactive __P((void));
 static void init_noninteractive __P((void));
 static void init_interactive_script __P((void));
+static void init_color_stderr __P((void));
 
 static void set_shell_name __P((char *));
 static void shell_initialize __P((void));
@@ -359,6 +360,8 @@ main (argc, argv, env)
 #endif
   volatile int locally_skip_execution;
   volatile int arg_index, top_level_arg_index;
+  char *color_stderr;
+
 #ifdef __OPENNT
   char **env;
 
@@ -744,6 +747,11 @@ main (argc, argv, env)
 #endif /* !ONESHOT */
 
   shell_initialized = 1;
+
+  color_stderr = get_string_value("COLOR_STDERR");
+  if (color_stderr && color_stderr[0]) {
+    init_color_stderr();
+  }
 
   /* Read commands until exit condition. */
   reader_loop ();
@@ -1628,6 +1636,96 @@ init_interactive_script ()
 {
   init_noninteractive ();
   expand_aliases = interactive_shell = startup_state = 1;
+}
+
+static void
+init_color_stderr ()
+{
+  #define STDERR_PREFIX "\033[31m"
+  #define STDERR_SUFFIX "\033[m"
+
+  int pid, stderr_copy;
+  int pipes[2];
+  int n;
+
+  size_t stderr_prefix_len, stderr_suffix_len;
+  char buf[1024];
+
+  char *stderr_prefix = get_string_value("STDERR_PREFIX");
+  char *stderr_suffix = get_string_value("STDERR_SUFFIX");
+
+  if (!stderr_prefix) stderr_prefix = STDERR_PREFIX;
+  if (!stderr_suffix) stderr_suffix = STDERR_SUFFIX;
+
+  stderr_prefix_len = strlen(stderr_prefix);
+  stderr_suffix_len = strlen(stderr_suffix);
+
+  if (pipe(pipes)) {
+    perror("Cannot create pipes");
+    return;
+  }
+
+  stderr_copy = dup(2);
+  if (stderr_copy < 0) {
+    perror("Cannot copy stderr");
+    close(pipes[0]);
+    close(pipes[1]);
+    return;
+  }
+
+  if ((pid = fork()) < 0) {
+    perror("Cannot fork()");
+    exit(2);
+  }
+
+  /* not child */
+  if (pid != 0)
+  {
+    if (dup2(pipes[1], 2) < 0) {
+      perror("Cannot dup2(pipes[1], 2)");
+      return;
+    }
+
+    if (close(pipes[0])) {
+      perror("Cannot close(pipes[0])");
+      return;
+    }
+
+    if (close(pipes[1])) {
+      perror("Cannot close(pipes[1])");
+      return;
+    }
+
+    return;
+  } else {
+    if (close(pipes[1])) {
+      perror("Cannot close(pipes[1])");
+      return;
+    }
+
+    for (;;) {
+      n = read(pipes[0], buf, sizeof(buf));
+      if (n <= 0) {
+        if (errno == EINTR) continue;
+        if (errno == EINVAL) exit(0);
+        if (errno) {
+          perror("Cannot read(pipes[0])");
+          exit(2);
+        }
+        exit(0);
+      }
+
+      write(2, stderr_prefix, stderr_prefix_len);
+      write(2, buf, (size_t) n);
+      write(2, stderr_suffix, stderr_suffix_len);
+    }
+
+    printf("Unreachable statement at %s:%d\n", __FILE__, __LINE__);
+    exit(2);
+  }
+
+  #undef STDERR_PREFIX
+  #undef STDERR_SUFFIX
 }
 
 void

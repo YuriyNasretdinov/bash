@@ -509,6 +509,8 @@ rl_redisplay ()
   if (_rl_echoing_p == 0)
     return;
 
+  _rl_output_some_chars("\033[m", 3);
+
   /* Block keyboard interrupts because this function manipulates global
      data structures. */
   _rl_block_sigint ();  
