@@ -1,0 +1,7 @@
+*.o
+*.a
+*dSYM
+.build
+bashversion
+version.h
+bash
