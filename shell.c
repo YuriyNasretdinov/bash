@@ -1691,7 +1691,7 @@ init_color_stderr ()
 {
   pthread_t thr;
   int pipes[2];
-  struct stderr_thread_data data;
+  static struct stderr_thread_data data;
 
   if (pipe(pipes)) {
     perror("Cannot create pipes");
